@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DDoS Monitor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0a0a0a;
+    --bg2: #111111;
+    --bg3: #1a1a1a;
+    --border: #2a2a2a;
+    --text: #e0e0e0;
+    --dim: #555555;
+    --accent: #ffffff;
+    --green: #00ff41;
+    --red: #ff1744;
+    --yellow: #ffd600;
+    --cyan: #00e5ff;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 13px;
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+
+  /* ---- SCANLINES OVERLAY ---- */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.15) 2px,
+      rgba(0, 0, 0, 0.15) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ---- HEADER ---- */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg2);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo {
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--dim);
+    white-space: pre;
+  }
+
+  .title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .subtitle {
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 2px;
+  }
+
+  .status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    font-size: 12px;
+    letter-spacing: 1px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 1.5s infinite;
+  }
+
+  .status-dot.down {
+    background: var(--red);
+    animation: pulse-red 0.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  @keyframes pulse-red {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ---- STATS BAR ---- */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat-card {
+    background: var(--bg2);
+    padding: 16px 20px;
+    text-align: center;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-value.danger { color: var(--red); }
+  .stat-value.warning { color: var(--yellow); }
+  .stat-value.good { color: var(--green); }
+
+  .stat-unit {
+    font-size: 11px;
+    color: var(--dim);
+    margin-left: 2px;
+  }
+
+  /* ---- MAIN GRID ---- */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    height: calc(100vh - 160px);
+  }
+
+  .panel {
+    background: var(--bg);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-title {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  .panel-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    border-radius: 2px;
+  }
+
+  .chart-container {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+  }
+
+  .chart-container canvas {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ---- LOG PANEL ---- */
+  .log-panel {
+    background: var(--bg);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    grid-column: 1 / -1;
+  }
+
+  .log-entries {
+    flex: 1;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.8;
+    min-height: 0;
+  }
+
+  .log-entries::-webkit-scrollbar { width: 4px; }
+  .log-entries::-webkit-scrollbar-track { background: var(--bg); }
+  .log-entries::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .log-entry {
+    display: flex;
+    gap: 12px;
+    opacity: 0;
+    animation: fadeIn 0.3s forwards;
+  }
+
+  @keyframes fadeIn {
+    to { opacity: 1; }
+  }
+
+  .log-time { color: var(--dim); min-width: 80px; }
+  .log-tag {
+    min-width: 70px;
+    font-weight: 500;
+    letter-spacing: 1px;
+  }
+  .log-tag.info { color: var(--cyan); }
+  .log-tag.warn { color: var(--yellow); }
+  .log-tag.error { color: var(--red); }
+  .log-tag.attack { color: var(--green); }
+  .log-msg { color: var(--text); }
+
+  /* ---- FOOTER ---- */
+  .footer {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 24px;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 1px;
+    z-index: 100;
+  }
+
+  /* ---- RESPONSIVE ---- */
+  @media (max-width: 900px) {
+    .stats-bar { grid-template-columns: repeat(3, 1fr); }
+    .main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-left">
+    <div class="logo">██╗  ██╗ ██████╗
+██║ ██╔╝██╔════╝
+█████╔╝ ███████╗
+██╔═██╗ ██╔═══██╗
+██║  ██╗╚██████╔╝
+╚═╝  ╚═╝ ╚═════╝</div>
+    <div>
+      <div class="title">DDoS Monitor</div>
+      <div class="subtitle">real-time attack visualization</div>
+    </div>
+  </div>
+  <div class="status-badge">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">TARGET ALIVE</span>
+  </div>
+</div>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat-card">
+    <div class="stat-label">Requests / sec</div>
+    <div class="stat-value" id="rps">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value" id="totalReqs">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active Conn</div>
+    <div class="stat-value" id="activeConn">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Avg Latency</div>
+    <div class="stat-value" id="avgLatency">0<span class="stat-unit">ms</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Error Rate</div>
+    <div class="stat-value" id="errorRate">0<span class="stat-unit">%</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Uptime</div>
+    <div class="stat-value good" id="uptime">00:00</div>
+  </div>
+</div>
+
+<!-- CHARTS -->
+<div class="main">
+  <!-- RPS Chart -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Requests Per Second</span>
+      <span class="panel-badge">LIVE</span>
+    </div>
+    <div class="chart-container">
+      <canvas id="rpsChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Latency Chart -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Response Latency</span>
+      <span class="panel-badge">ms</span>
+    </div>
+    <div class="chart-container">
+      <canvas id="latencyChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Connections Chart -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Active Connections</span>
+      <span class="panel-badge">CONN</span>
+    </div>
+    <div class="chart-container">
+      <canvas id="connChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Error Rate Chart -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Error Rate</span>
+      <span class="panel-badge">%</span>
+    </div>
+    <div class="chart-container">
+      <canvas id="errorChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- LOG -->
+<div class="log-panel" style="height: 180px; border-top: 1px solid var(--border);">
+  <div class="panel-header">
+    <span class="panel-title">Event Log</span>
+    <span class="panel-badge" id="logCount">0 events</span>
+  </div>
+  <div class="log-entries" id="logEntries"></div>
+</div>
+
+<div class="footer">
+  <span>k6 DDoS Simulation Lab</span>
+  <span id="clock"></span>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const TARGET_STATUS_URL = '/api/status';
+const POLL_INTERVAL = 500;
+const MAX_POINTS = 120;
+
+// ============================================================
+// CHART SETUP
+// ============================================================
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 200 },
+  scales: {
+    x: {
+      display: true,
+      grid: { color: '#1a1a1a', drawBorder: false },
+      ticks: { color: '#444', font: { family: 'JetBrains Mono', size: 9 }, maxTicksLimit: 8 },
+    },
+    y: {
+      display: true,
+      grid: { color: '#1a1a1a', drawBorder: false },
+      ticks: { color: '#444', font: { family: 'JetBrains Mono', size: 10 } },
+      beginAtZero: true,
+    }
+  },
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1a1a1a',
+      borderColor: '#333',
+      borderWidth: 1,
+      titleFont: { family: 'JetBrains Mono', size: 11 },
+      bodyFont: { family: 'JetBrains Mono', size: 11 },
+      titleColor: '#888',
+      bodyColor: '#fff',
+    }
+  },
+  elements: {
+    point: { radius: 0, hoverRadius: 3 },
+    line: { tension: 0.3, borderWidth: 1.5 },
+  }
+};
+
+function makeLabels() {
+  return Array(MAX_POINTS).fill('');
+}
+
+function makeDataset(color, fillColor) {
+  return {
+    data: Array(MAX_POINTS).fill(0),
+    borderColor: color,
+    backgroundColor: fillColor || 'transparent',
+    fill: !!fillColor,
+  };
+}
+
+const rpsChart = new Chart(document.getElementById('rpsChart'), {
+  type: 'line',
+  data: {
+    labels: makeLabels(),
+    datasets: [
+      { ...makeDataset('#ffffff', 'rgba(255,255,255,0.05)'), label: 'req/s' },
+    ]
+  },
+  options: { ...chartDefaults }
+});
+
+const latencyChart = new Chart(document.getElementById('latencyChart'), {
+  type: 'line',
+  data: {
+    labels: makeLabels(),
+    datasets: [
+      { ...makeDataset('#ffffff', 'rgba(255,255,255,0.03)'), label: 'avg' },
+      { ...makeDataset('#555555'), label: 'p95', borderDash: [4, 4] },
+    ]
+  },
+  options: { ...chartDefaults }
+});
+
+const connChart = new Chart(document.getElementById('connChart'), {
+  type: 'line',
+  data: {
+    labels: makeLabels(),
+    datasets: [
+      { ...makeDataset('#ffffff', 'rgba(255,255,255,0.05)'), label: 'active' },
+      { ...makeDataset('#333333', 'rgba(50,50,50,0.3)'), label: 'max (128)' },
+    ]
+  },
+  options: { ...chartDefaults }
+});
+
+const errorChart = new Chart(document.getElementById('errorChart'), {
+  type: 'line',
+  data: {
+    labels: makeLabels(),
+    datasets: [
+      { ...makeDataset('#ff1744', 'rgba(255,23,68,0.08)'), label: 'error %' },
+    ]
+  },
+  options: {
+    ...chartDefaults,
+    scales: {
+      ...chartDefaults.scales,
+      y: { ...chartDefaults.scales.y, max: 100 }
+    }
+  }
+});
+
+// ============================================================
+// STATE
+// ============================================================
+let state = {
+  totalRequests: 0,
+  prevAccepted: 0,
+  rps: 0,
+  activeConn: 0,
+  avgLatency: 0,
+  p95Latency: 0,
+  errorRate: 0,
+  alive: true,
+  startTime: Date.now(),
+  logCount: 0,
+  history: {
+    rps: [],
+    latencyAvg: [],
+    latencyP95: [],
+    conn: [],
+    connMax: [],
+    errors: [],
+  }
+};
+
+// ============================================================
+// PUSH DATA TO CHARTS
+// ============================================================
+function pushData(chart, datasetIdx, value) {
+  const ds = chart.data.datasets[datasetIdx];
+  ds.data.push(value);
+  if (ds.data.length > MAX_POINTS) ds.data.shift();
+
+  if (datasetIdx === 0) {
+    const now = new Date();
+    const label = now.toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    chart.data.labels.push(label);
+    if (chart.data.labels.length > MAX_POINTS) chart.data.labels.shift();
+  }
+}
+
+// ============================================================
+// LOGGING
+// ============================================================
+function addLog(tag, msg) {
+  const el = document.getElementById('logEntries');
+  const now = new Date().toLocaleTimeString('en', { hour12: false });
+  const tagClass = tag.toLowerCase();
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `<span class="log-time">${now}</span><span class="log-tag ${tagClass}">[${tag}]</span><span class="log-msg">${msg}</span>`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+  state.logCount++;
+  document.getElementById('logCount').textContent = `${state.logCount} events`;
+
+  // Keep max 200 entries
+  while (el.children.length > 200) el.removeChild(el.firstChild);
+}
+
+// ============================================================
+// FETCH TARGET STATUS
+// ============================================================
+async function fetchStatus() {
+  try {
+    const res = await fetch(TARGET_STATUS_URL, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // Calculate RPS from accepted requests delta
+    const accepted = data.accepted || 0;
+    const delta = accepted - state.prevAccepted;
+    state.rps = Math.max(0, Math.round(delta / (POLL_INTERVAL / 1000)));
+    state.prevAccepted = accepted;
+
+    state.totalRequests = data.total_requests || accepted;
+    state.activeConn = data.active || 0;
+
+    // Simulate latency from connection pressure
+    const connRatio = state.activeConn / 128;
+    state.avgLatency = Math.round(5 + connRatio * 500 + Math.random() * 20);
+    state.p95Latency = Math.round(state.avgLatency * (1.5 + connRatio * 2));
+
+    // Error rate based on overload
+    if (state.activeConn > 100) {
+      state.errorRate = Math.min(99, Math.round((state.activeConn - 100) / 28 * 100 + Math.random() * 10));
+    } else {
+      state.errorRate = Math.round(Math.random() * 2);
+    }
+
+    if (!state.alive) {
+      addLog('INFO', 'Target server recovered — connections restored');
+    }
+    state.alive = true;
+
+  } catch (e) {
+    state.rps = 0;
+    state.activeConn = 0;
+    state.errorRate = 100;
+    state.avgLatency = 0;
+    state.p95Latency = 0;
+
+    if (state.alive) {
+      addLog('ERROR', `Target unreachable: ${e.message}`);
+    }
+    state.alive = false;
+  }
+}
+
+// ============================================================
+// UPDATE UI
+// ============================================================
+function updateUI() {
+  // Stats
+  document.getElementById('rps').textContent = state.rps.toLocaleString();
+  document.getElementById('totalReqs').textContent = state.totalRequests.toLocaleString();
+  document.getElementById('activeConn').textContent = state.activeConn;
+  document.getElementById('avgLatency').innerHTML = `${state.avgLatency}<span class="stat-unit">ms</span>`;
+  document.getElementById('errorRate').innerHTML = `${state.errorRate}<span class="stat-unit">%</span>`;
+
+  // Color code stats
+  const errEl = document.getElementById('errorRate');
+  errEl.className = 'stat-value ' + (state.errorRate > 50 ? 'danger' : state.errorRate > 20 ? 'warning' : 'good');
+
+  const latEl = document.getElementById('avgLatency');
+  latEl.className = 'stat-value ' + (state.avgLatency > 200 ? 'danger' : state.avgLatency > 50 ? 'warning' : '');
+
+  const connEl = document.getElementById('activeConn');
+  connEl.className = 'stat-value ' + (state.activeConn > 100 ? 'danger' : state.activeConn > 50 ? 'warning' : '');
+
+  // Status
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  if (state.alive) {
+    dot.className = 'status-dot';
+    txt.textContent = state.activeConn > 100 ? 'UNDER ATTACK' : 'TARGET ALIVE';
+    if (state.activeConn > 100) dot.style.background = '#ffd600';
+  } else {
+    dot.className = 'status-dot down';
+    txt.textContent = 'TARGET DOWN';
+  }
+
+  // Uptime
+  const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+  const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const secs = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('uptime').textContent = `${mins}:${secs}`;
+
+  // Charts
+  pushData(rpsChart, 0, state.rps);
+  rpsChart.update('none');
+
+  pushData(latencyChart, 0, state.avgLatency);
+  pushData(latencyChart, 1, state.p95Latency);
+  latencyChart.update('none');
+
+  pushData(connChart, 0, state.activeConn);
+  pushData(connChart, 1, 128);
+  connChart.update('none');
+
+  pushData(errorChart, 0, state.errorRate);
+  errorChart.update('none');
+
+  // Log events on thresholds
+  if (state.rps > 1000 && Math.random() < 0.05) {
+    addLog('ATTACK', `High traffic detected: ${state.rps.toLocaleString()} req/s from multiple sources`);
+  }
+  if (state.activeConn > 100 && Math.random() < 0.08) {
+    addLog('WARN', `Connection pool near exhaustion: ${state.activeConn}/128`);
+  }
+  if (state.errorRate > 80 && Math.random() < 0.1) {
+    addLog('ERROR', `Service degradation critical — ${state.errorRate}% requests failing`);
+  }
+}
+
+// ============================================================
+// CLOCK
+// ============================================================
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleString('en', {
+    hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+// ============================================================
+// INIT
+// ============================================================
+addLog('INFO', 'Monitor initialized — connecting to target server...');
+addLog('INFO', 'Polling target at ' + TARGET_STATUS_URL);
+
+setInterval(async () => {
+  await fetchStatus();
+  updateUI();
+}, POLL_INTERVAL);
+
+setInterval(updateClock, 1000);
+updateClock();
+</script>
+</body>
+</html>

