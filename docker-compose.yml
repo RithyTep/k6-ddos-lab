@@ -1,0 +1,77 @@
+version: "3.8"
+
+services:
+  # ---- TARGET: simple nginx web server ----
+  target:
+    build: ./target
+    container_name: ddos-target
+    ports:
+      - "8080:80"
+    networks:
+      - lab-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  # ---- PROXY: squid forward proxy ----
+  proxy:
+    build: ./proxy
+    container_name: ddos-proxy
+    ports:
+      - "3128:3128"
+    networks:
+      - lab-net
+    depends_on:
+      - target
+
+  # ---- MONITORING: prometheus + grafana ----
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ddos-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - lab-net
+    depends_on:
+      - target
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ddos-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    networks:
+      - lab-net
+    depends_on:
+      - prometheus
+
+  # ---- ATTACKER: k6 load testing ----
+  k6:
+    image: grafana/k6:latest
+    container_name: ddos-k6
+    volumes:
+      - ./scripts:/scripts
+    environment:
+      - K6_PROMETHEUS_RW_SERVER_URL=http://prometheus:9090/api/v1/write
+      - K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true
+    networks:
+      - lab-net
+    depends_on:
+      - target
+      - proxy
+    # run manually: docker compose run k6 run /scripts/http_flood.js
+    entrypoint: ["k6"]
+    command: ["run", "/scripts/http_flood.js"]
+    profiles:
+      - attack
+
+networks:
+  lab-net:
+    driver: bridge

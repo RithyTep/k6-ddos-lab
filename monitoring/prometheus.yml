@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "nginx-target"
+    metrics_path: /nginx_status
+    static_configs:
+      - targets: ["target:80"]
